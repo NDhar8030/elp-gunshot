@@ -1,0 +1,41 @@
+data:
+  balance_data: False
+  ratio: 50
+  snr_filter: True
+  duration_filter: True
+  snr_cutoff: 30
+  duration_cutoff: 7
+  clip: True
+  positive_slice_seconds: 3
+  negative_slice_seconds: 3
+  nfft: 256
+  window_size: 256
+  window_stride: 128
+  mels: 50
+  fmin: 50
+  fmax: 2000
+  sample_rate: 8000
+  top_db: 80
+
+training:
+  augment: False
+  seed: 42
+  n_epochs: 20
+  batch_size: 32
+  early_stopping_patience: 5
+  learning_rate: 0.001
+  loss: "binary_crossentropy"
+  model_dir: "models"
+  model_name: "model.keras"
+  patience: 5
+  save_best_only: True
+  save_weights_only: False
+  verbose: 1
+
+evaluation:
+  show_confusion_matrix: True
+  show_train_metrics: False
+  show_test_metrics: False
+  show_pr_curve: True
+  show_hist_curves: True
+  make_metrics_csv: False
