@@ -1,5 +1,4 @@
 models/*
-outputs/*
 __pycache__/
 
 *.keras
@@ -10,16 +9,26 @@ __pycache__/
 
 !models/.gitkeep
 
+outputs/cm/train/*
 !outputs/cm/train/.gitkeep
+outputs/cm/val/*
 !outputs/cm/val/.gitkeep
+outputs/cm/test/*
 !outputs/cm/test/.gitkeep
 
+outputs/curves/*
 !outputs/curves/.gitkeep
 
+outputs/pr/train/*
 !outputs/pr/train/.gitkeep
+outputs/pr/val/*
 !outputs/pr/val/.gitkeep
+outputs/pr/test/*
 !outputs/pr/test/.gitkeep
 
+outputs/preds/train/*
 !outputs/preds/train/.gitkeep
+outputs/preds/val/*
 !outputs/preds/val/.gitkeep
+outputs/preds/test/*
 !outputs/preds/test/.gitkeep
