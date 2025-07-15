@@ -1,10 +1,12 @@
 models/*
 outputs/*
+__pycache__/*
 
 *.keras
 *.pkl
 *.npz
 *.ipynb
+
 
 !models/.gitkeep
 
