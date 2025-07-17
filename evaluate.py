@@ -4,43 +4,82 @@ import matplotlib.pyplot as plt
 import csv
 from datetime import datetime
 from load_data import compute_spectrogram_tf_nolabel, load_config
-from train import ensure_length
 import numpy as np
 import time
 from scipy.interpolate import interp1d
-from sklearn.metrics import precision_recall_curve, auc, average_precision_score, log_loss
+from sklearn.metrics import precision_recall_curve, auc, log_loss
+import sklearn
 import seaborn as sns
 import pandas as pd
-import sklearn
+import h5py
+import random
 
 config = load_config()
 
+def load_group(name):
+    """
+    Reads the 'audio' and 'label' datasets from group `name` in the HDF5 file,
+    converts each audio array to tf.float32 tensors and labels to Python ints.
+    Returns: (list of tensors, list of ints)
+    """
+    with h5py.File(f"elp_slices_{config['data']['balance_data']}_{config['data']['ratio']}_{config['data']['snr_filter']}_{config['data']['duration_filter']}_{config['data']['snr_cutoff']}_{config['data']['duration_cutoff']}_{config['data']['clip']}_{config['data']['positive_slice_seconds']}_{config['data']['negative_slice_seconds']}_{config['data']['nfft']}_{config['data']['window_size']}_{config['data']['window_stride']}_{config['data']['mels']}_{config['data']['fmin']}_{config['data']['fmax']}_{config['data']['sample_rate']}_{config['data']['top_db']}.h5", "r") as f:
+        grp = f[name]
+        audio_ds = grp["audio"]
+        label_ds = grp["label"]
+        num = audio_ds.shape[0]
+
+        slices = [
+            tf.constant(audio_ds[i], dtype=tf.float32)
+            for i in range(num)
+        ]
+        labels = [
+            int(label_ds[i])
+            for i in range(num)
+        ]
+    return slices, labels
+
+def ensure_length(slice_tensor):
+    """Ensure tensor has proper length"""
+    TARGET_LENGTH = int(config['data']['positive_slice_seconds'] * config['data']['sample_rate'])
+    audio_length = tf.shape(slice_tensor)[0]
+    if audio_length < TARGET_LENGTH:
+        pad_len = TARGET_LENGTH - audio_length
+        return tf.pad(slice_tensor, [[0, pad_len]])
+    elif audio_length > TARGET_LENGTH:
+        return slice_tensor[:TARGET_LENGTH]
+    return slice_tensor
+
 def get_slices_and_labels(partition):
     if partition == 'train':
-        data = np.load("elp_slices.npz", allow_pickle=True)
-        train_pos = data['train_pos']
-        train_neg = data['train_neg']
-        slices = [ensure_length(slice[0]) for slice in train_pos] + [ensure_length(slice[0]) for slice in train_neg]
-        labels = [slice[1] for slice in train_pos] + [slice[1] for slice in train_neg]
-        return slices, labels
+        train_pos_slices, train_pos_labels = load_group("train_pos")
+        train_neg_slices, train_neg_labels = load_group("train_neg")
+        trimmed_train_pos_slices = [(ensure_length(slice), label) for slice, label in zip(train_pos_slices, train_pos_labels)]
+        trimmed_train_neg_slices = [(ensure_length(slice), label) for slice, label in zip(train_neg_slices, train_neg_labels)]
+        train_full = trimmed_train_pos_slices + trimmed_train_neg_slices
+        random.seed(42)
+        random.shuffle(train_full)
+        train = train_full[:int(0.8*len(train_full))]
+        train_slices = [slice for slice, _ in train]
+        train_labels = [label for _, label in train]
+        return train_slices, train_labels
     elif partition == 'test':
-        data = np.load("elp_slices.npz", allow_pickle=True)
-        test_pos = data['test_pos']
-        test_neg = data['test_neg']
-        slices = [ensure_length(slice[0]) for slice in test_pos] + [ensure_length(slice[0]) for slice in test_neg]
-        labels = [slice[1] for slice in test_pos] + [slice[1] for slice in test_neg]
+        test_pos_slices, test_pos_labels = load_group("test_pos")
+        test_neg_slices, test_neg_labels = load_group("test_neg")
+        slices = [ensure_length(slice) for slice in test_pos_slices] + [ensure_length(slice) for slice in test_neg_slices]
+        labels = test_pos_labels + test_neg_labels
         return slices, labels
     elif partition == 'val':
-        data = np.load("elp_slices.npz", allow_pickle=True)
-        train_pos = data['train_pos']
-        train_neg = data['train_neg']
-        trimmed_train_pos_slices = [(ensure_length(slice[0]), slice[1]) for slice in train_pos]
-        trimmed_train_neg_slices = [(ensure_length(slice[0]), slice[1]) for slice in train_neg]
+        train_pos_slices, train_pos_labels = load_group("train_pos")
+        train_neg_slices, train_neg_labels = load_group("train_neg")
+        trimmed_train_pos_slices = [(ensure_length(slice), label) for slice, label in zip(train_pos_slices, train_pos_labels)]
+        trimmed_train_neg_slices = [(ensure_length(slice), label) for slice, label in zip(train_neg_slices, train_neg_labels)]
         train_full = trimmed_train_pos_slices + trimmed_train_neg_slices
+        random.seed(42)
+        random.shuffle(train_full)
         val = train_full[int(0.8*len(train_full)):]
-        slices = [ensure_length(slice[0]) for slice in val]
-        labels = [slice[1] for slice in val]
-        return slices, labels
+        val_slices = [slice for slice, _ in val]
+        val_labels = [label for _, label in val]
+        return val_slices, val_labels
     else:
         raise ValueError(f"Invalid partition: {partition}")
 
@@ -50,7 +89,7 @@ def get_preds(partition,model):
     start = time.time()
     ds = tf.data.Dataset.from_tensor_slices(slices)
     ds = ds.map(compute_spectrogram_tf_nolabel, num_parallel_calls=tf.data.AUTOTUNE)
-    ds = ds.batch(config['data']['batch_size'])
+    ds = ds.batch(config['training']['batch_size'])
     ds = ds.prefetch(tf.data.AUTOTUNE)
 
     start = time.time()
@@ -90,7 +129,6 @@ def get_metrics_custom(partition, preds, threshold, make_csv=bool, make_specs=bo
                 spec = compute_spectrogram_tf_nolabel(slices[i])
                 plt.figure()
                 plt.imshow(tf.transpose(spec))
-                plt.show()
         elif pred >= threshold and label==0:
             false_positives += 1
             prediction_type = 'FP'
@@ -101,16 +139,15 @@ def get_metrics_custom(partition, preds, threshold, make_csv=bool, make_specs=bo
      
                 plt.figure()
                 plt.imshow(tf.transpose(spec))
-                plt.show()
         elif pred >= threshold and label==1:
             true_positives += 1
 
     precision = true_positives / (true_positives + false_positives + 1e-5)
     recall = true_positives / (true_positives + false_negatives + 1e-5)
     f1 = 2*(precision*recall) / (precision + recall + 1e-5)
-    log_loss = log_loss(labels, preds)
+    bce = log_loss(labels, preds)
     accuracy = (true_positives + true_negatives) / (true_positives + true_negatives + false_positives + false_negatives)
-    print("Evaluation Metrics:")
+    print(f"({partition} Evaluation Metrics for {model_name}:")
     print(f"True Positives: {true_positives}")
     print(f"True Negatives: {true_negatives}")
     print(f"False Positives: {false_positives}")
@@ -119,11 +156,11 @@ def get_metrics_custom(partition, preds, threshold, make_csv=bool, make_specs=bo
     print(f"Precision: {precision:.4f}")
     print(f"Recall: {recall:.4f}")
     print(f"F1 Score: {f1:.4f}")
-    print(f"Log loss: {log_loss:.4f}")
+    print(f"Log loss: {bce:.4f}")
 
     if make_csv:
         misclassified_files = sorted(misclassified_files, key=lambda x: x[4], reverse=True)
-        metrics_row = ['', '', '', '', '', '', '', 'Prediction Type', f'True Positives: {true_positives:.2f}', f'False Positives: {false_positives:.2f}', f'True Negatives: {true_negatives:.2f}', f'False Negatives: {false_negatives:.2f}', f'Accuracy: {accuracy:.2f}', f'Recall: {recall:.2f}', f'Precision: {precision:.2f}', f'Log loss: {log_loss:.2f}']
+        metrics_row = ['', '', '', '', '', '', '', 'Prediction Type', f'True Positives: {true_positives:.2f}', f'False Positives: {false_positives:.2f}', f'True Negatives: {true_negatives:.2f}', f'False Negatives: {false_negatives:.2f}', f'Accuracy: {accuracy:.2f}', f'Recall: {recall:.2f}', f'Precision: {precision:.2f}', f'Log loss: {bce:.2f}']
         misclassified_files.insert(0, metrics_row)
         now = datetime.now()
         date = now.strftime("%m-%d-%Y,%H-%M-%S")
@@ -137,7 +174,7 @@ def get_metrics_custom(partition, preds, threshold, make_csv=bool, make_specs=bo
     return
 
 def get_pr_curve(partition, y_pred_probs, save_figs=bool, model_name=str):
-    y_true, _ = get_slices_and_labels(partition)
+    _, y_true = get_slices_and_labels(partition)
     y_pred_probs = [pred for pred in y_pred_probs]
     precision, recall, thresholds = precision_recall_curve(y_true, y_pred_probs)
     area = auc(recall,precision)
@@ -187,7 +224,6 @@ def get_pr_curve(partition, y_pred_probs, save_figs=bool, model_name=str):
         now = datetime.now()
         date = now.strftime("%m-%d-%Y,%H-%M-%S")
         plt.savefig(f'outputs//pr//{partition}//{model_name}_PR_curve_{date}.png', bbox_inches='tight')
-    plt.show()
     return best_f1_threshold
 
 def get_evaluations(loaded_model, model_name, hist):
@@ -197,12 +233,12 @@ def get_evaluations(loaded_model, model_name, hist):
 
     if config['evaluation']['show_hist_curves']:
         plt.figure(figsize=(10,6))
-        plt.plot(hist.history['val_auc_pr'], label='Validation AUC-PR', style='--', color='blue')
-        plt.plot(hist.history['train_auc_pr'], label='Training AUC-PR', color='blue')
-        plt.plot(hist.history['val_precision'], label='Validation Precision', style='--', color='green')
-        plt.plot(hist.history['train_precision'], label='Training Precision', color='green')
-        plt.plot(hist.history['val_recall'], label='Validation Recall', style='--', color='red')
-        plt.plot(hist.history['train_recall'], label='Training Recall', color='red')
+        plt.plot(hist.history['val_auc_pr'], label='Validation AUC-PR', linestyle='--', color='blue')
+        plt.plot(hist.history['auc_pr'], label='Training AUC-PR', color='blue')
+        plt.plot(hist.history['val_precision'], label='Validation Precision', linestyle='--', color='green')
+        plt.plot(hist.history['precision'], label='Training Precision', color='green')
+        plt.plot(hist.history['val_recall'], label='Validation Recall', linestyle='--', color='red')
+        plt.plot(hist.history['recall'], label='Training Recall', color='red')
         plt.xlabel('Epoch')
         plt.ylabel('Value')
         plt.title('Training History')
@@ -219,7 +255,7 @@ def get_evaluations(loaded_model, model_name, hist):
         plt.ylabel("True")
         now = datetime.now()
         date = now.strftime("%m-%d-%Y,%H-%M-%S")
-        plt.savefig(f'outputs//pr//val//{model_name}_confusion_matrix_{date}.png', bbox_inches='tight')
+        plt.savefig(f'outputs//cm//val//{model_name}_confusion_matrix_{date}.png', bbox_inches='tight')
     
     if config['evaluation']['show_train_metrics']:
         preds = get_preds('train', loaded_model)
@@ -235,7 +271,7 @@ def get_evaluations(loaded_model, model_name, hist):
             plt.ylabel("True")
             now = datetime.now()
             date = now.strftime("%m-%d-%Y,%H-%M-%S")
-            plt.savefig(f'outputs//pr//train//{model_name}_confusion_matrix_{date}.png', bbox_inches='tight')
+            plt.savefig(f'outputs//cm//train//{model_name}_confusion_matrix_{date}.png', bbox_inches='tight')
         
 
     if config['evaluation']['show_test_metrics']:
@@ -252,5 +288,5 @@ def get_evaluations(loaded_model, model_name, hist):
             plt.ylabel("True")
             now = datetime.now()
             date = now.strftime("%m-%d-%Y,%H-%M-%S")
-            plt.savefig(f'outputs//pr//test//{model_name}_confusion_matrix_{date}.png', bbox_inches='tight')
+            plt.savefig(f'outputs//cm//test//{model_name}_confusion_matrix_{date}.png', bbox_inches='tight')
 

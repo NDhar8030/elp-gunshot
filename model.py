@@ -21,6 +21,7 @@ def create_model(input_shape):
     
     inputs = Input(shape=(input_shape))
     print(inputs.shape)
+    #inputs = layers.Lambda(lambda x: tf.reshape(inputs.shape[2],inputs.shape[3]))
 
     expanded_inputs = layers.Lambda(lambda x: tf.expand_dims(x, axis=-1))(inputs)
     print(expanded_inputs.shape)
@@ -30,11 +31,10 @@ def create_model(input_shape):
     x = depthwise_conv_block(x, 128, 1, (3,3), (2,2))
     x = depthwise_conv_block(x, 256, 1, (3,3), (2,2))
     x = depthwise_conv_block(x, 512, 1, (3,3), (2,2))
-    x = depthwise_conv_block(x, 1024, 1, (3,3), (2,2))
 
     x = layers.GlobalAveragePooling2D(keepdims=True)(x)
     x = layers.Flatten()(x)
-    x = layers.Dense(1024, activation='relu')(x)
+    x = layers.Dense(512, activation='relu')(x)
     x = layers.Dropout(0.5)(x)
     outputs = layers.Dense(1, activation='sigmoid')(x)
 

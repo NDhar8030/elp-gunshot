@@ -20,9 +20,9 @@ data:
 training:
   augment: False
   seed: 42
-  n_epochs: 20
-  batch_size: 32
-  early_stopping_patience: 5
+  epochs: 10
+  batch_size: 64
+  early_stopping_patience: 0
   learning_rate: 0.001
   loss: "binary_crossentropy"
   model_dir: "models"
@@ -35,7 +35,7 @@ training:
 evaluation:
   show_confusion_matrix: True
   show_train_metrics: False
-  show_test_metrics: False
+  show_test_metrics: True
   show_pr_curve: True
   show_hist_curves: True
   make_metrics_csv: False

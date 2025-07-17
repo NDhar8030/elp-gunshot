@@ -5,6 +5,7 @@ import pandas as pd
 import tensorflow as tf
 import tensorflow_io as tfio
 import yaml
+import h5py
 import random
 
 
@@ -40,7 +41,7 @@ def set_seeds():
         print("Warning: Could not set seeds because 'training.seed' not found in config.")
     print("Seeds set.")
 
-def make_elp_dataset(path_to_sounds, path_to_meta, balance_data=False, ratio=int,
+def get_elp_slices(path_to_sounds, path_to_meta, balance_data=False, ratio=int,
                      snr_filter=False, duration_filter=False, snr_cutoff=int, duration_cutoff=int,
                      clip=True, positive_slice_seconds=int, negative_slice_seconds=int,
                      nfft=256, window_size=256, window_stride=128, mels=32, fmin=5, fmax=2000, 
@@ -437,27 +438,27 @@ def _extract_ratio_negatives(df, path_to_sounds, num_pos_slices, ratio, neg_len,
 def make_full_elp_dataset(training_dataset_paths, testing_dataset_paths):
     train_pos_slices = []
     train_neg_slices = []
-    for sounds_path, meta_path in training_dataset_paths:
+    for data_path in training_dataset_paths:
         pos_slices, neg_slices = get_elp_slices(
-            sounds_path,
-            meta_path,
-            balance_data=False,
-            ratio=config.ratio,
-            snr_filter=True,
-            duration_filter=True,
-            snr_cutoff=30,
-            duration_cutoff=7,
-            clip=True,
-            positive_slice_seconds=3,
-            negative_slice_seconds=3,
-            nfft=256,
-            window_size=256,
-            window_stride=128,
-            mels=32,
-            fmin=5,
-            fmax=2000,
-            sample_rate=8000,
-            top_db=80
+            data_path[0],
+            data_path[1],
+            balance_data=config['data']['balance_data'],
+            ratio=config['data']['ratio'],
+            snr_filter=config['data']['snr_filter'],
+            duration_filter=config['data']['duration_filter'],
+            snr_cutoff=config['data']['snr_cutoff'],
+            duration_cutoff=config['data']['duration_cutoff'],
+            clip=config['data']['clip'],
+            positive_slice_seconds=config['data']['positive_slice_seconds'],
+            negative_slice_seconds=config['data']['negative_slice_seconds'],
+            nfft=config['data']['nfft'],
+            window_size=config['data']['window_size'],
+            window_stride=config['data']['window_stride'],
+            mels=config['data']['mels'],
+            fmin=config['data']['fmin'],
+            fmax=config['data']['fmax'],
+            sample_rate=config['data']['sample_rate'],
+            top_db=config['data']['top_db']
         )
         train_pos_slices.extend(pos_slices)
         train_neg_slices.extend(neg_slices)
@@ -466,27 +467,27 @@ def make_full_elp_dataset(training_dataset_paths, testing_dataset_paths):
 
     test_pos_slices = []
     test_neg_slices = []
-    for sounds_path, meta_path in testing_dataset_paths:
+    for data_path in testing_dataset_paths:
         pos_slices, neg_slices = get_elp_slices(
-            sounds_path,
-            meta_path,
-            balance_data=False,
-            ratio=50,
-            snr_filter=True,
-            duration_filter=True,
-            snr_cutoff=30,
-            duration_cutoff=7,
-            clip=True,
-            positive_slice_seconds=3,
-            negative_slice_seconds=3,
-            nfft=256,
-            window_size=256,
-            window_stride=128,
-            mels=32,
-            fmin=5,
-            fmax=2000,
-            sample_rate=8000,
-            top_db=80
+            data_path[0],
+            data_path[1],
+            balance_data=config['data']['balance_data'],
+            ratio=config['data']['ratio'],
+            snr_filter=config['data']['snr_filter'],
+            duration_filter=config['data']['duration_filter'],
+            snr_cutoff=config['data']['snr_cutoff'],
+            duration_cutoff=config['data']['duration_cutoff'],
+            clip=config['data']['clip'],
+            positive_slice_seconds=config['data']['positive_slice_seconds'],
+            negative_slice_seconds=config['data']['negative_slice_seconds'],
+            nfft=config['data']['nfft'],
+            window_size=config['data']['window_size'],
+            window_stride=config['data']['window_stride'],
+            mels=config['data']['mels'],
+            fmin=config['data']['fmin'],
+            fmax=config['data']['fmax'],
+            sample_rate=config['data']['sample_rate'],
+            top_db=config['data']['top_db']
         )
         test_pos_slices.extend(pos_slices)
         test_neg_slices.extend(neg_slices)
@@ -560,7 +561,7 @@ if __name__ == "__main__":
 
         testing_dataset_paths = [
             [
-                "D://naveens documents//elp_data//gunshot//Testing//PNNN//Sounds"
+                "D://naveens documents//elp_data//gunshot//Testing//PNNN//Sounds",
                 "D://naveens documents//elp_data//gunshot//Testing//PNNN//nn201710_hbguns_10days_gunsOnly.txt"
             ]
         ]
@@ -569,14 +570,80 @@ if __name__ == "__main__":
 
         train_pos_slices, train_neg_slices, test_pos_slices, test_neg_slices = make_full_elp_dataset(training_dataset_paths, testing_dataset_paths)
 
-        print("Finished extracting slices, pickling...")
+        print("Finished extracting slices, saving to HDF5...")
+
+        with h5py.File(f"elp_slices_{config['data']['balance_data']}_{config['data']['ratio']}_{config['data']['snr_filter']}_{config['data']['duration_filter']}_{config['data']['snr_cutoff']}_{config['data']['duration_cutoff']}_{config['data']['clip']}_{config['data']['positive_slice_seconds']}_{config['data']['negative_slice_seconds']}_{config['data']['nfft']}_{config['data']['window_size']}_{config['data']['window_stride']}_{config['data']['mels']}_{config['data']['fmin']}_{config['data']['fmax']}_{config['data']['sample_rate']}_{config['data']['top_db']}.h5", "w") as f:
+            # Define a variable‑length float32 dtype for audio arrays
+            dt_vlen = h5py.special_dtype(vlen=np.dtype("float32"))
+
+            # Utility to create a pair of extendable datasets for one group
+            def make_group(name):
+                grp = f.create_group(name)
+                grp.create_dataset(
+                    "audio",
+                    shape=(0,),
+                    maxshape=(None,),
+                    dtype=dt_vlen,
+                    chunks=True
+                )
+                grp.create_dataset(
+                    "label",
+                    shape=(0,),
+                    maxshape=(None,),
+                    dtype="int32",
+                    chunks=True
+                )
+                return grp
+
+            # Create groups
+            gp_train_pos = make_group("train_pos")
+            gp_train_neg = make_group("train_neg")
+            gp_test_pos  = make_group("test_pos")
+            gp_test_neg  = make_group("test_neg")
+
+            # Function to append a list of (tensor, label) to a group
+            def append_to_group(grp, slice_list):
+                aud_ds = grp["audio"]
+                lbl_ds = grp["label"]
+                for i, (audio_tensor, label) in enumerate(slice_list, start=aud_ds.shape[0]):
+                    arr = audio_tensor.numpy()  # 1D float32 array
+                    # Resize to make room for one more element
+                    aud_ds.resize((i + 1,))
+                    lbl_ds.resize((i + 1,))
+                    # Write data
+                    aud_ds[i] = arr
+                    lbl_ds[i] = label
+
+            # Append all four lists
+            append_to_group(gp_train_pos, train_pos_slices)
+            append_to_group(gp_train_neg, train_neg_slices)
+            append_to_group(gp_test_pos,  test_pos_slices)
+            append_to_group(gp_test_neg,  test_neg_slices)
+
+        '''print("Finished extracting slices, pickling...")
+
+        train_pos_slices = np.array([t[0].numpy() for t in train_pos_slices], dtype=object)
+        train_pos_labels = np.array([t[1] for t in train_pos_slices], dtype=np.int32)
+        train_neg_slices = np.array([t[0].numpy() for t in train_neg_slices], dtype=object)
+        train_neg_labels = np.array([t[1] for t in train_neg_slices], dtype=np.int32)
+
+        test_pos_slices = np.array([t[0].numpy() for t in test_pos_slices], dtype=object)
+        test_pos_labels = np.array([t[1] for t in test_pos_slices], dtype=np.int32)
+        test_neg_slices = np.array([t[0].numpy() for t in test_neg_slices], dtype=object)
+        test_neg_labels = np.array([t[1] for t in test_neg_slices], dtype=np.int32)
 
         np.savez_compressed(
-            "elp_slices.npz",
-            train_pos=[t.numpy() for t in train_pos_slices],
-            train_neg=[t.numpy() for t in train_neg_slices],
-            test_pos=[t.numpy() for t in test_pos_slices],
-            test_neg=[t.numpy() for t in test_neg_slices]
+            f"elp_slices_{config['data']['balance_data']}_{config['data']['ratio']}_{config['data']['snr_filter']}_{config['data']['duration_filter']}_{config['data']['snr_cutoff']}_{config['data']['duration_cutoff']}_{config['data']['clip']}_{config['data']['positive_slice_seconds']}_{config['data']['negative_slice_seconds']}_{config['data']['nfft']}_{config['data']['window_size']}_{config['data']['window_stride']}_{config['data']['mels']}_{config['data']['fmin']}_{config['data']['fmax']}_{config['data']['sample_rate']}_{config['data']['top_db']}.npz",
+            train_pos_slices=train_pos_slices,
+            train_pos_labels=train_pos_labels,
+            train_neg_slices=train_neg_slices,
+            train_neg_labels=train_neg_labels,
+            test_pos_slices=test_pos_slices,
+            test_pos_labels=test_pos_labels,
+            test_neg_slices=test_neg_slices,
+            test_neg_labels=test_neg_labels
         )
 
-        print("Pickled slices, all done!")
+        print("Pickled slices, all done!")'''
+
+        print("Saved slices to HDF5, all done!")

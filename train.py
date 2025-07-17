@@ -6,36 +6,28 @@ from model import create_model
 import yaml
 import argparse
 import os
-from evaluate import get_preds, get_metrics_custom, get_pr_curve, get_evaluations, get_slices_and_labels
+from evaluate import load_group,ensure_length, get_preds, get_metrics_custom, get_pr_curve, get_evaluations, get_slices_and_labels
 from matplotlib import pyplot as plt
 import pickle
-import seaborn as sns
 import pandas as pd
 import sklearn
+import h5py
+import random
 
 config = load_config()
 
 set_seeds()
 
-def ensure_length(slice_tensor):
-    """Ensure tensor has length 24000"""
-    TARGET_LENGTH = int(config['data']['positive_slice_seconds'] * config['data']['sample_rate'])
-    audio_length = tf.shape(slice_tensor)[0]
-    if audio_length < TARGET_LENGTH:
-        pad_len = TARGET_LENGTH - audio_length
-        return tf.pad(slice_tensor, [[0, pad_len]])
-    elif audio_length > TARGET_LENGTH:
-        return slice_tensor[:TARGET_LENGTH]
-    return slice_tensor
+def elp_dataset_pipeline(train_pos_slices, train_pos_labels, train_neg_slices, train_neg_labels, test_pos_slices, test_pos_labels, test_neg_slices, test_neg_labels):
+    trimmed_train_pos_slices = [ensure_length(slice) for slice in train_pos_slices]
+    trimmed_train_neg_slices = [ensure_length(slice) for slice in train_neg_slices]
 
-def elp_dataset_pipeline(train_pos_slices, train_neg_slices, test_pos_slices, test_neg_slices):
-    trimmed_train_pos_slices = [(ensure_length(slice[0]), slice[1]) for slice in train_pos_slices]
-    trimmed_train_neg_slices = [(ensure_length(slice[0]), slice[1]) for slice in train_neg_slices]
+    trimmed_test_pos_slices = [ensure_length(slice) for slice in test_pos_slices]
+    trimmed_test_neg_slices = [ensure_length(slice) for slice in test_neg_slices]
 
-    trimmed_test_pos_slices = [(ensure_length(slice[0]), slice[1]) for slice in test_pos_slices]
-    trimmed_test_neg_slices = [(ensure_length(slice[0]), slice[1]) for slice in test_neg_slices]
-
-    train_full = trimmed_train_pos_slices + trimmed_train_neg_slices
+    train_full = [[slice, label] for slice, label in zip(trimmed_train_pos_slices, train_pos_labels)] + [[slice, label] for slice, label in zip(trimmed_train_neg_slices, train_neg_labels)]
+    random.seed(42)
+    random.shuffle(train_full)
     train = train_full[:int(0.8*len(train_full))]
     val = train_full[int(0.8*len(train_full)):]
 
@@ -45,29 +37,29 @@ def elp_dataset_pipeline(train_pos_slices, train_neg_slices, test_pos_slices, te
     val_wavs = [item[0] for item in val]
     val_labels = [item[1] for item in val]
 
-    test = trimmed_test_pos_slices + trimmed_test_neg_slices
+    test_full = [[slice, label] for slice, label in zip(trimmed_test_pos_slices, test_pos_labels)] + [[slice, label] for slice, label in zip(trimmed_test_neg_slices, test_neg_labels)]
 
-    test_wavs = [item[0] for item in test]
-    test_labels = [item[1] for item in test]
+    test_wavs = [item[0] for item in test_full]
+    test_labels = [item[1] for item in test_full]
 
     train = tf.data.Dataset.from_tensor_slices((train_wavs, train_labels)).cache()
     train = train.shuffle(buffer_size=(len(train))//2, reshuffle_each_iteration=True)
     if config['training']['augment']:
         train = train.map(augment_waveform_tf, num_parallel_calls=tf.data.AUTOTUNE)
     train = train.map(compute_spectrogram_tf, num_parallel_calls=tf.data.AUTOTUNE)
-    train = train.batch(batch_size=config['data']['batch_size'])
+    train = train.batch(batch_size=config['training']['batch_size'])
     train = train.prefetch(tf.data.AUTOTUNE)
 
     val = tf.data.Dataset.from_tensor_slices((val_wavs, val_labels)).cache()
     val = val.shuffle(buffer_size=(len(val)//2), reshuffle_each_iteration=False)
     val = val.map(compute_spectrogram_tf, num_parallel_calls=tf.data.AUTOTUNE)
-    val = val.batch(batch_size=config['data']['batch_size'])
+    val = val.batch(batch_size=config['training']['batch_size'])
     val = val.prefetch(tf.data.AUTOTUNE)
 
     test = tf.data.Dataset.from_tensor_slices((test_wavs, test_labels)).cache()
     test = test.shuffle(buffer_size=(len(test)//2), reshuffle_each_iteration=False)
     test = test.map(compute_spectrogram_tf, num_parallel_calls=tf.data.AUTOTUNE)
-    test = test.batch(batch_size=config['data']['batch_size'])
+    test = test.batch(batch_size=config['training']['batch_size'])
     test = test.prefetch(tf.data.AUTOTUNE)
 
     return train, val, test
@@ -79,7 +71,7 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", type=float, default=config['training']['learning_rate'], help="Learning rate for the optimizer")
     parser.add_argument("--loss", type=str, default=config['training']['loss'], help="Loss function to use")
     parser.add_argument("--epochs", type=int, default=config['training']['epochs'], help="Number of epochs to train for")
-    parser.add_argument("--batch_size", type=int, default=config['data']['batch_size'], help="Batch size for training")
+    parser.add_argument("--batch_size", type=int, default=config['training']['batch_size'], help="Batch size for training")
     parser.add_argument("--model_dir", type=str, default=config['training']['model_dir'], help="Directory to save the trained model")
     parser.add_argument("--model_name", type=str, default=config['training']['model_name'], help="Name of the model")
     parser.add_argument("--early_stopping_patience", type=int, default=config['training']['early_stopping_patience'], help="Number of epochs with no improvement after which training will be stopped")
@@ -109,20 +101,38 @@ if __name__ == "__main__":
     AUGMENT = args.augment
     MODEL_PATH = os.path.join(MODEL_DIR, MODEL_NAME)
 
-    print("Loading data from pickle...")
-    data = np.load("elp_slices.npz", allow_pickle=True)
-    train_pos_slices = [tf.constant(arr, dtype=tf.float32) for arr in data['train_pos']]
-    train_neg_slices = [tf.constant(arr, dtype=tf.float32) for arr in data['train_neg']]
-    test_pos_slices = [tf.constant(arr, dtype=tf.float32) for arr in data['test_pos']]
-    test_neg_slices = [tf.constant(arr, dtype=tf.float32) for arr in data['test_neg']]
+    print("Loading data from HDF5...")
+
+    with h5py.File(f"elp_slices_{config['data']['balance_data']}_{config['data']['ratio']}_{config['data']['snr_filter']}_{config['data']['duration_filter']}_{config['data']['snr_cutoff']}_{config['data']['duration_cutoff']}_{config['data']['clip']}_{config['data']['positive_slice_seconds']}_{config['data']['negative_slice_seconds']}_{config['data']['nfft']}_{config['data']['window_size']}_{config['data']['window_stride']}_{config['data']['mels']}_{config['data']['fmin']}_{config['data']['fmax']}_{config['data']['sample_rate']}_{config['data']['top_db']}.h5", "r") as f:
+        train_pos_slices, train_pos_labels = load_group("train_pos")
+        train_neg_slices, train_neg_labels = load_group("train_neg")
+        test_pos_slices,  test_pos_labels  = load_group("test_pos")
+        test_neg_slices,  test_neg_labels  = load_group("test_neg")
+
+        print(f"  • train_pos: {len(train_pos_slices)} slices")
+        print(f"  • train_neg: {len(train_neg_slices)} slices")
+        print(f"  •  test_pos: {len(test_pos_slices)} slices")
+        print(f"  •  test_neg: {len(test_neg_slices)} slices")
+    '''print("Loading data from pickle...")
+    data = np.load(f"elp_slices_{config['data']['balance_data']}_{config['data']['ratio']}_{config['data']['snr_filter']}_{config['data']['duration_filter']}_{config['data']['snr_cutoff']}_{config['data']['duration_cutoff']}_{config['data']['clip']}_{config['data']['positive_slice_seconds']}_{config['data']['negative_slice_seconds']}_{config['data']['nfft']}_{config['data']['window_size']}_{config['data']['window_stride']}_{config['data']['mels']}_{config['data']['fmin']}_{config['data']['fmax']}_{config['data']['sample_rate']}_{config['data']['top_db']}.npz", allow_pickle=True)
+    train_pos_slices = [tf.constant(arr, dtype=tf.float32) for arr in data['train_pos_slices']]
+    train_pos_labels = [arr for arr in data['train_pos_labels']]
+    train_neg_slices = [tf.constant(arr, dtype=tf.float32) for arr in data['train_neg_slices']]
+    train_neg_labels = [arr for arr in data['train_neg_labels']]
+    test_pos_slices = [tf.constant(arr, dtype=tf.float32) for arr in data['test_pos_slices']]
+    test_pos_labels = [arr for arr in data['test_pos_labels']]
+    test_neg_slices = [tf.constant(arr, dtype=tf.float32) for arr in data['test_neg_slices']]
+    test_neg_labels = [arr for arr in data['test_neg_labels']]'''
+
+
 
     print("Data loaded, creating dataset pipeline...")
 
-    train, val, test = elp_dataset_pipeline(train_pos_slices, train_neg_slices, test_pos_slices, test_neg_slices)
+    train, val, test = elp_dataset_pipeline(train_pos_slices, train_pos_labels, train_neg_slices, train_neg_labels, test_pos_slices, test_pos_labels, test_neg_slices, test_neg_labels)
 
     print("Dataset pipeline created, compiling model...")
-
-    model = create_model(train.element_spec[0].shape)
+    input_shape = train.element_spec[0].shape
+    model = create_model(input_shape[1:])
 
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE),
@@ -155,8 +165,7 @@ if __name__ == "__main__":
                 monitor='val_auc_pr',
                 patience=EARLY_STOPPING_PATIENCE,
                 mode='max',
-                verbose=VERBOSE,
-                save_weights_only=SAVE_WEIGHTS_ONLY
+                verbose=VERBOSE
             )
         )
 
